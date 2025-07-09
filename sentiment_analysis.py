@@ -21,7 +21,7 @@ from scipy.sparse import hstack, csr_matrix # 用于拼接稀疏矩阵
 tqdm.pandas()
 
 DATA_PATH = './data/waimai.csv'
-WORD_VECTORS_PATH = './path/to/your/Tencent_AILab_ChineseEmbedding.txt'
+WORD_VECTORS_PATH = 'word2vec/light_Tencent_AILab_ChineseEmbedding.bin'
 SAVED_MODELS_DIR = './saved_models_fusion/'
 VECTORIZER_PATH = os.path.join(SAVED_MODELS_DIR, 'tfidf_vectorizer_best.pkl')
 MODEL_PATH = os.path.join(SAVED_MODELS_DIR, 'best_classifier_fusion.pkl')
@@ -101,7 +101,7 @@ def extract_features(df):
 def load_word_vectors(path):
     """加载预训练的词向量模型"""
     print(f"正在从 {path} 加载预训练词向量，这可能需要几分钟...")
-    wv = KeyedVectors.load_word2vec_format(path, binary=False)
+    wv = KeyedVectors.load_word2vec_format(path, binary=True)
     print("词向量加载完成。")
     return wv
 
@@ -293,42 +293,9 @@ if __name__ == '__main__':
     create_dirs()
     # 1. 加载和预处理数据
     dataframe = load_and_preprocess_data(DATA_PATH)
-    # 2. 提取特征
-    X_train_feat, X_test_feat, y_train_labels, y_test_labels = extract_features(dataframe)
-    # 3. 调优、训练、评估和保存
-    tune_and_evaluate_classifiers(X_train_feat, X_test_feat, y_train_labels, y_test_labels)
-
-    # --- 如何使用已保存的最佳模型进行新预测的示例 ---
-    print("\n\n--- 使用已保存的最佳模型进行新预测 ---")
-    # 加载保存的模型和向量化器
-    with open(MODEL_PATH, 'rb') as f:
-        loaded_model = pickle.load(f)
-    with open(VECTORIZER_PATH, 'rb') as f:
-        loaded_vectorizer = pickle.load(f)
-        
-    new_reviews = [
-        "这家店的饭菜味道太棒了，送餐速度也很快，下次还点！",
-        "等了一个多小时才送到，到手都凉了，味道也很一般，不会再来了。",
-        "中规中矩，没什么亮点，可以填饱肚子。"
-    ]
-    
-    new_reviews_cut = [" ".join(jieba.cut(review)) for review in new_reviews]
-    new_reviews_tfidf = loaded_vectorizer.transform(new_reviews_cut)
-    
-    predictions = loaded_model.predict(new_reviews_tfidf)
-    
-    # 逻辑回归和SVM(LinearSVC)有 decision_function, 朴素贝叶斯有 predict_proba
-    if hasattr(loaded_model, "predict_proba"):
-        probabilities = loaded_model.predict_proba(new_reviews_tfidf)
-    else: # For LinearSVC
-        decision_values = loaded_model.decision_function(new_reviews_tfidf)
-        # Manually convert decision values to probabilities using sigmoid-like scaling (not true probabilities)
-        # This is just for demonstration purposes.
-        from scipy.special import expit
-        probabilities = np.array([1-expit(decision_values), expit(decision_values)]).T
-
-    for review, pred, prob in zip(new_reviews, predictions, probabilities):
-        sentiment = "正面" if pred == 1 else "负面"
-        print(f"\n评论: '{review}'")
-        print(f"预测情感: {sentiment} (标签: {pred})")
-        print(f"预测置信度/概率: [负面: {prob[0]:.4f}, 正面: {prob[1]:.4f}]")
+    # 2. 加载词向量模型
+    word_vectors = load_word_vectors(WORD_VECTORS_PATH)
+    # 3. 提取并融合特征
+    X_train_features, X_test_features, y_train_labels, y_test_labels = extract_and_combine_features(dataframe, word_vectors)
+    # 4. 调优、训练、评估和保存
+    tune_and_evaluate(X_train_features, X_test_features, y_train_labels, y_test_labels)
