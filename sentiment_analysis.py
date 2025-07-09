@@ -69,8 +69,8 @@ def train_model(df):
     # 特征提取 (TF-IDF)
     print("\n提取TF-IDF特征...")
 
-    with open('baidu_stopwords.txt', 'r', encoding='utf-8') as f:
-        stopwords = [line.strip() for line in f.readlines()]
+    #with open('baidu_stopwords.txt', 'r', encoding='utf-8') as f:
+    #    stopwords = [line.strip() for line in f.readlines()]
 
     # N-gram特征的处理
     # 方案一：只使用一元词
@@ -79,9 +79,11 @@ def train_model(df):
     # vectorizer = TfidfVectorizer(ngram_range=(1, 2), max_features=10000)
     # 方案三：一元二元三元均使用
     vectorizer = TfidfVectorizer(
-        ngram_range=(1, 3), 
-        max_features=15000,
-        stop_words=stopwords  # 传入停用词列表
+        ngram_range=(1, 2), 
+        max_features=15000
+        # min_df=10,
+        # max_df=0.8
+        #stop_words=stopwords  # 传入停用词列表
     )
     
     X_train_tfidf = vectorizer.fit_transform(X_train)
