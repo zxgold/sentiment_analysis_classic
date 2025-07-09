@@ -7,6 +7,8 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import accuracy_score, classification_report
 from tqdm import tqdm
+from sklearn.svm import LinearSVC
+from sklearn.naive_bayes import MultinomialNB
 
 # --- 1. 配置与路径定义 ---
 # 注册 tqdm 到 pandas，这样在 apply 操作时也能看到进度条
@@ -63,7 +65,7 @@ def train_model(df):
     # 划分数据集
     X = df['review_cut']
     y = df['label']
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3, random_state=42, stratify=y)
     print(f"训练集大小: {len(X_train)}, 测试集大小: {len(X_test)}")
 
     # 特征提取 (TF-IDF)
@@ -92,10 +94,20 @@ def train_model(df):
     print(f"TF-IDF矩阵维度 (训练集): {X_train_tfidf.shape}")
     
     # 训练逻辑回归模型
-    print("\n训练逻辑回归模型...")
-    model = LogisticRegression(max_iter=1000, random_state=42)
-    model.fit(X_train_tfidf, y_train)
+    #print("\n训练逻辑回归模型...")
+    #model = LogisticRegression(max_iter=1000, random_state=42)
+    #model.fit(X_train_tfidf, y_train)
     
+    # 训练 SVM 模型
+    print("\n训练 SVM 模型...")
+    model = LinearSVC(random_state=42)
+    model.fit(X_train_tfidf, y_train)
+
+    # 训练朴素贝叶斯模型
+    #print("\n训练朴素贝叶斯模型...")
+    #model = MultinomialNB()
+    #model.fit(X_train_tfidf, y_train)
+
     # 保存模型和向量化器
     print("\n保存模型和向量化器到磁盘...")
     with open(MODEL_PATH, 'wb') as f:
