@@ -2,13 +2,14 @@ import pandas as pd
 import jieba
 import pickle
 import os
-from sklearn.model_selection import train_test_split
+import time
+from sklearn.model_selection import train_test_split, GridSearchCV
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import accuracy_score, classification_report
-from tqdm import tqdm
 from sklearn.svm import LinearSVC
 from sklearn.naive_bayes import MultinomialNB
+from sklearn.metrics import accuracy_score, classification_report
+from tqdm import tqdm
 
 # --- 1. 配置与路径定义 ---
 # 注册 tqdm 到 pandas，这样在 apply 操作时也能看到进度条
@@ -57,23 +58,14 @@ def load_and_preprocess_data(file_path):
     return df
 
 
-# --- 3. 特征提取与模型训练 ---
-def train_model(df):
-    """划分数据集，提取TF-IDF特征，并训练逻辑回归模型"""
-    print("\n开始训练模型...")
-    
-    # 划分数据集
+# --- 3. 特征提取 ---
+def extract_features(df):
+    print("\n划分数据集并提取TF-IDF特征...")
     X = df['review_cut']
     y = df['label']
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3, random_state=42, stratify=y)
-    print(f"训练集大小: {len(X_train)}, 测试集大小: {len(X_test)}")
-
-    # 特征提取 (TF-IDF)
-    print("\n提取TF-IDF特征...")
-
-    #with open('baidu_stopwords.txt', 'r', encoding='utf-8') as f:
-    #    stopwords = [line.strip() for line in f.readlines()]
-
+    # 使用 stratify=y 保证训练集和测试集中标签分布与原始数据一致
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
+    
     # N-gram特征的处理
     # 方案一：只使用一元词
     # vectorizer = TfidfVectorizer(max_features=5000, min_df=5, max_df=0.7)
@@ -91,88 +83,141 @@ def train_model(df):
     X_train_tfidf = vectorizer.fit_transform(X_train)
     X_test_tfidf = vectorizer.transform(X_test)
     
-    print(f"TF-IDF矩阵维度 (训练集): {X_train_tfidf.shape}")
+    print(f"特征提取完成。TF-IDF矩阵维度 (训练集): {X_train_tfidf.shape}")
     
-    # 训练逻辑回归模型
-    #print("\n训练逻辑回归模型...")
-    #model = LogisticRegression(max_iter=1000, random_state=42)
-    #model.fit(X_train_tfidf, y_train)
-    
-    # 训练 SVM 模型
-    print("\n训练 SVM 模型...")
-    model = LinearSVC(random_state=42)
-    model.fit(X_train_tfidf, y_train)
-
-    # 训练朴素贝叶斯模型
-    #print("\n训练朴素贝叶斯模型...")
-    #model = MultinomialNB()
-    #model.fit(X_train_tfidf, y_train)
-
-    # 保存模型和向量化器
-    print("\n保存模型和向量化器到磁盘...")
-    with open(MODEL_PATH, 'wb') as f:
-        pickle.dump(model, f)
+    # 保存向量化器，因为它与最佳模型是配对的
     with open(VECTORIZER_PATH, 'wb') as f:
         pickle.dump(vectorizer, f)
-        
-    print(f"模型保存在: {MODEL_PATH}")
-    print(f"向量化器保存在: {VECTORIZER_PATH}")
-
-    return model, vectorizer, X_test_tfidf, y_test
-
-
-# --- 4. 模型评估 ---
-def evaluate_model(model, X_test_tfidf, y_test):
-    """在测试集上评估模型性能"""
-    print("\n开始评估模型...")
-    y_pred = model.predict(X_test_tfidf)
+    print(f"最优特征的向量化器已保存至: {VECTORIZER_PATH}")
     
-    accuracy = accuracy_score(y_test, y_pred)
-    print(f"\n测试集正确率 (Accuracy): {accuracy:.4f}")
+    return X_train_tfidf, X_test_tfidf, y_train, y_test
+
+
+# --- 4. 网格搜索、模型训练与评估 ---
+def tune_and_evaluate_classifiers(X_train_tfidf, X_test_tfidf, y_train, y_test):
+    """对多个分类器进行网格搜索调优，并选出最佳模型进行评估"""
+    
+    # 定义要测试的分类器和它们的参数网格
+    classifiers = {
+        "Logistic Regression": {
+            "model": LogisticRegression(max_iter=2000, solver='liblinear', random_state=42),
+            "params": {
+                'C': [0.1, 1, 10, 50],
+                'penalty': ['l1', 'l2']
+            }
+        },
+        "Linear SVC": {
+            "model": LinearSVC(max_iter=2000, random_state=42, dual=True),
+            "params": {
+                'C': [0.01, 0.1, 1, 10]
+            }
+        },
+        "Multinomial NB": {
+            "model": MultinomialNB(),
+            "params": {
+                'alpha': [0.01, 0.1, 0.5, 1.0]
+            }
+        }
+    }
+    
+    best_model = None
+    best_accuracy = 0.0
+    best_model_name = ""
+
+    # 遍历每个分类器进行网格搜索
+    for name, a_classifier in classifiers.items():
+        print(f"\n--- 正在为 {name} 进行网格搜索 ---")
+        start_time = time.time()
+        
+        grid_search = GridSearchCV(
+            a_classifier["model"],
+            a_classifier["params"],
+            cv=5,
+            scoring='accuracy',
+            verbose=1,
+            n_jobs=-1
+        )
+        grid_search.fit(X_train_tfidf, y_train)
+        
+        end_time = time.time()
+        
+        print(f"{name} 最佳参数: ", grid_search.best_params_)
+        print(f"交叉验证最佳准确率: {grid_search.best_score_:.4f}")
+        print(f"搜索耗时: {(end_time - start_time):.2f} 秒")
+        
+        # 记录并更新全局最佳模型
+        if grid_search.best_score_ > best_accuracy:
+            best_accuracy = grid_search.best_score_
+            best_model = grid_search.best_estimator_
+            best_model_name = name
+    
+    print(f"\n--- 网格搜索完成 ---")
+    print(f"在所有分类器中，表现最好的是: {best_model_name}")
+    print(f"其交叉验证准确率为: {best_accuracy:.4f}")
+    
+    # --- 使用找到的最佳模型在独立的测试集上进行最终评估 ---
+    print("\n--- 使用最佳模型在测试集上进行最终评估 ---")
+    y_pred = best_model.predict(X_test_tfidf)
+    
+    final_accuracy = accuracy_score(y_test, y_pred)
+    print(f"\n测试集最终正确率 (Accuracy): {final_accuracy:.4f}")
     
     print("\n详细分类报告:")
     print(classification_report(y_test, y_pred, target_names=['Negative (0)', 'Positive (1)']))
 
-    if accuracy >= 0.88:
-        print("\n恭喜！模型性能已达到通过标准 (≥ 0.88)。")
+    if final_accuracy >= 0.88:
+        print("\n恭喜！最终模型性能已达到通过标准 (≥ 0.88)。")
     else:
-        print("\n模型性能未达到标准。")
+        print("\n最终模型性能未达到标准。")
+        
+    # 保存最佳模型
+    print(f"\n保存最佳模型 ({best_model_name}) 到磁盘...")
+    with open(MODEL_PATH, 'wb') as f:
+        pickle.dump(best_model, f)
+    print(f"最佳模型已保存至: {MODEL_PATH}")
 
 
 # --- 5. 主执行函数 ---
 if __name__ == '__main__':
     create_dirs()
+    # 1. 加载和预处理数据
     dataframe = load_and_preprocess_data(DATA_PATH)
-    trained_model, tfidf_vectorizer, X_test_features, y_test_labels = train_model(dataframe)
-    evaluate_model(trained_model, X_test_features, y_test_labels)
+    # 2. 提取特征
+    X_train_feat, X_test_feat, y_train_labels, y_test_labels = extract_features(dataframe)
+    # 3. 调优、训练、评估和保存
+    tune_and_evaluate_classifiers(X_train_feat, X_test_feat, y_train_labels, y_test_labels)
 
-    # --- 如何使用已保存的模型进行新预测的示例 ---
-    print("\n--- 使用已保存的模型进行新预测 ---")
+    # --- 如何使用已保存的最佳模型进行新预测的示例 ---
+    print("\n\n--- 使用已保存的最佳模型进行新预测 ---")
     # 加载保存的模型和向量化器
     with open(MODEL_PATH, 'rb') as f:
         loaded_model = pickle.load(f)
     with open(VECTORIZER_PATH, 'rb') as f:
         loaded_vectorizer = pickle.load(f)
         
-    # 准备新评论
     new_reviews = [
         "这家店的饭菜味道太棒了，送餐速度也很快，下次还点！",
         "等了一个多小时才送到，到手都凉了，味道也很一般，不会再来了。",
         "中规中矩，没什么亮点，可以填饱肚子。"
     ]
     
-    # 对新评论进行分词
     new_reviews_cut = [" ".join(jieba.cut(review)) for review in new_reviews]
-    
-    # 转换成TF-IDF向量
     new_reviews_tfidf = loaded_vectorizer.transform(new_reviews_cut)
     
-    # 进行预测
     predictions = loaded_model.predict(new_reviews_tfidf)
-    probabilities = loaded_model.predict_proba(new_reviews_tfidf)
+    
+    # 逻辑回归和SVM(LinearSVC)有 decision_function, 朴素贝叶斯有 predict_proba
+    if hasattr(loaded_model, "predict_proba"):
+        probabilities = loaded_model.predict_proba(new_reviews_tfidf)
+    else: # For LinearSVC
+        decision_values = loaded_model.decision_function(new_reviews_tfidf)
+        # Manually convert decision values to probabilities using sigmoid-like scaling (not true probabilities)
+        # This is just for demonstration purposes.
+        from scipy.special import expit
+        probabilities = np.array([1-expit(decision_values), expit(decision_values)]).T
 
     for review, pred, prob in zip(new_reviews, predictions, probabilities):
         sentiment = "正面" if pred == 1 else "负面"
         print(f"\n评论: '{review}'")
         print(f"预测情感: {sentiment} (标签: {pred})")
-        print(f"预测概率: [负面: {prob[0]:.4f}, 正面: {prob[1]:.4f}]")
+        print(f"预测置信度/概率: [负面: {prob[0]:.4f}, 正面: {prob[1]:.4f}]")
