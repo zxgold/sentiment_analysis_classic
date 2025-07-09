@@ -3,6 +3,7 @@ import jieba
 import pickle
 import os
 import time
+import numpy as np
 from sklearn.model_selection import train_test_split, GridSearchCV
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.linear_model import LogisticRegression
@@ -10,6 +11,7 @@ from sklearn.svm import LinearSVC
 from sklearn.naive_bayes import MultinomialNB
 from sklearn.metrics import accuracy_score, classification_report
 from tqdm import tqdm
+
 
 # --- 1. 配置与路径定义 ---
 # 注册 tqdm 到 pandas，这样在 apply 操作时也能看到进度条
@@ -100,14 +102,14 @@ def tune_and_evaluate_classifiers(X_train_tfidf, X_test_tfidf, y_train, y_test):
     # 定义要测试的分类器和它们的参数网格
     classifiers = {
         "Logistic Regression": {
-            "model": LogisticRegression(max_iter=2000, solver='liblinear', random_state=42),
+            "model": LogisticRegression(max_iter=2000, solver='liblinear', random_state=42, class_weight='balanced'),
             "params": {
                 'C': [0.1, 1, 10, 50],
                 'penalty': ['l1', 'l2']
             }
         },
         "Linear SVC": {
-            "model": LinearSVC(max_iter=2000, random_state=42, dual=True),
+            "model": LinearSVC(max_iter=2000, random_state=42, dual=True, class_weight='balanced'),
             "params": {
                 'C': [0.01, 0.1, 1, 10]
             }
