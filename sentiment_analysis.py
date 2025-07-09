@@ -10,7 +10,10 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.svm import LinearSVC
 from sklearn.naive_bayes import MultinomialNB
 from sklearn.metrics import accuracy_score, classification_report
+from gensim.models import KeyedVectors
 from tqdm import tqdm
+from scipy.sparse import hstack, csr_matrix # 用于拼接稀疏矩阵
+
 
 
 # --- 1. 配置与路径定义 ---
@@ -18,9 +21,10 @@ from tqdm import tqdm
 tqdm.pandas()
 
 DATA_PATH = './data/waimai.csv'
-SAVED_MODELS_DIR = './saved_models/'
-VECTORIZER_PATH = os.path.join(SAVED_MODELS_DIR, 'tfidf_vectorizer.pkl')
-MODEL_PATH = os.path.join(SAVED_MODELS_DIR, 'logistic_regression.pkl')
+WORD_VECTORS_PATH = './path/to/your/Tencent_AILab_ChineseEmbedding.txt'
+SAVED_MODELS_DIR = './saved_models_fusion/'
+VECTORIZER_PATH = os.path.join(SAVED_MODELS_DIR, 'tfidf_vectorizer_best.pkl')
+MODEL_PATH = os.path.join(SAVED_MODELS_DIR, 'best_classifier_fusion.pkl')
 
 
 def create_dirs():
@@ -93,6 +97,56 @@ def extract_features(df):
     print(f"最优特征的向量化器已保存至: {VECTORIZER_PATH}")
     
     return X_train_tfidf, X_test_tfidf, y_train, y_test
+
+def load_word_vectors(path):
+    """加载预训练的词向量模型"""
+    print(f"正在从 {path} 加载预训练词向量，这可能需要几分钟...")
+    wv = KeyedVectors.load_word2vec_format(path, binary=False)
+    print("词向量加载完成。")
+    return wv
+
+def sentence_to_vector(sentence, wv_model):
+    """将分词后的句子转换为句子向量（通过词向量平均）"""
+    words = sentence.split()
+    vectors = [wv_model[word] for word in words if word in wv_model]
+    if not vectors:
+        # 如果句子中所有词都不在词向量词汇表中，返回一个零向量
+        return np.zeros(wv_model.vector_size)
+    return np.mean(vectors, axis=0)
+
+def extract_and_combine_features(df, wv_model):
+    """提取TF-IDF和词向量特征，并进行融合"""
+    print("\n划分数据集...")
+    X = df['review_cut']
+    y = df['label']
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
+    
+    # === A. 提取 TF-IDF 特征 ===
+    print("提取TF-IDF特征...")
+    tfidf_vectorizer = TfidfVectorizer(ngram_range=(1, 2), max_features=15000, min_df=5, max_df=0.7)
+    X_train_tfidf = tfidf_vectorizer.fit_transform(X_train)
+    X_test_tfidf = tfidf_vectorizer.transform(X_test)
+    print(f"TF-IDF 特征维度: {X_train_tfidf.shape[1]}")
+    
+    # === B. 提取词向量特征 (句子向量) ===
+    print("提取词向量特征 (句子向量)...")
+    X_train_w2v = np.array([sentence_to_vector(sentence, wv_model) for sentence in tqdm(X_train, desc="Train W2V")])
+    X_test_w2v = np.array([sentence_to_vector(sentence, wv_model) for sentence in tqdm(X_test, desc="Test W2V")])
+    print(f"词向量特征维度: {X_train_w2v.shape[1]}")
+    
+    # === C. 融合特征 ===
+    print("融合 TF-IDF 和词向量特征...")
+    # hstack 用于水平拼接稀疏矩阵 (csr_matrix) 和稠密数组
+    X_train_combined = hstack([X_train_tfidf, csr_matrix(X_train_w2v)])
+    X_test_combined = hstack([X_test_tfidf, csr_matrix(X_test_w2v)])
+    print(f"融合后特征维度: {X_train_combined.shape[1]}")
+    
+    # 保存向量化器以备后用
+    with open(VECTORIZER_PATH, 'wb') as f:
+        pickle.dump(tfidf_vectorizer, f)
+    print(f"TF-IDF向量化器已保存至: {VECTORIZER_PATH}")
+    
+    return X_train_combined, X_test_combined, y_train, y_test
 
 
 # --- 4. 网格搜索、模型训练与评估 ---
@@ -178,6 +232,61 @@ def tune_and_evaluate_classifiers(X_train_tfidf, X_test_tfidf, y_train, y_test):
         pickle.dump(best_model, f)
     print(f"最佳模型已保存至: {MODEL_PATH}")
 
+
+# 使用模型融合
+def tune_and_evaluate(X_train_feat, X_test_feat, y_train, y_test):
+    """对多个分类器进行网格搜索调优"""
+    # ... (这部分代码与上一版 tune_and_evaluate_classifiers 函数基本相同)
+    # 只是现在传入的特征是融合后的特征 X_train_combined
+    # 朴素贝叶斯 (MultinomialNB) 不能处理负值，所以我们从这里移除它，
+    # 因为词向量平均后可能出现负值。
+    classifiers = {
+        "Logistic Regression": {
+            "model": LogisticRegression(max_iter=2000, solver='liblinear', random_state=42, class_weight='balanced'),
+            "params": {'C': [1, 10, 50]}
+        },
+        "Linear SVC": {
+            "model": LinearSVC(max_iter=2000, random_state=42, dual=True, class_weight='balanced'),
+            "params": {'C': [0.1, 1, 10]}
+        }
+    }
+    
+    best_model = None
+    best_accuracy = 0.0
+    best_model_name = ""
+
+    for name, a_classifier in classifiers.items():
+        print(f"\n--- 正在为 {name} 进行网格搜索 (使用融合特征) ---")
+        grid_search = GridSearchCV(a_classifier["model"], a_classifier["params"], cv=3, scoring='accuracy', verbose=2, n_jobs=-1) # cv=3 加快速度
+        grid_search.fit(X_train_feat, y_train)
+        
+        print(f"{name} 最佳参数: ", grid_search.best_params_)
+        print(f"交叉验证最佳准确率: {grid_search.best_score_:.4f}")
+        
+        if grid_search.best_score_ > best_accuracy:
+            best_accuracy = grid_search.best_score_
+            best_model = grid_search.best_estimator_
+            best_model_name = name
+            
+    print(f"\n--- 网格搜索完成，最佳模型为: {best_model_name} ---")
+    
+    # 使用最佳模型在测试集上评估
+    print("\n--- 使用最佳模型在测试集上进行最终评估 ---")
+    y_pred = best_model.predict(X_test_feat)
+    final_accuracy = accuracy_score(y_test, y_pred)
+    print(f"\n测试集最终正确率 (Accuracy): {final_accuracy:.4f}")
+    print("\n详细分类报告:")
+    print(classification_report(y_test, y_pred, target_names=['Negative (0)', 'Positive (1)']))
+
+    if final_accuracy >= 0.88:
+        print("\n恭喜！融合特征模型性能已达到通过标准 (≥ 0.88)。")
+    else:
+        print("\n融合特征模型性能仍未达到标准。")
+        
+    # 保存最佳模型
+    with open(MODEL_PATH, 'wb') as f:
+        pickle.dump(best_model, f)
+    print(f"最佳模型已保存至: {MODEL_PATH}")
 
 # --- 5. 主执行函数 ---
 if __name__ == '__main__':
